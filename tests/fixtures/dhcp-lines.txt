@@ -1,0 +1,75 @@
+# Fixture lines shaped like `tcpdump -i eth2 -l -n -v 'udp dst port 67'`
+# output (note: -v, no -e -- see ip4pt-discover.sh for why the DHCP capture
+# is a separate one). One DHCP packet spans several lines: a header line
+# followed by tab-indented continuation lines, one per option.
+#
+# Wording verified against tcpdump's own test-suite recordings (e.g.
+# tests/ieee802.11_htc.out, tests/dhcp-mud.out) on the master tree, which
+# matches the 4.99.x shipped on OpenWrt 25.12:
+#   header:  "0.0.0.0.68 > 255.255.255.255.67: BOOTP/DHCP, Request from
+#             <chaddr>, length 300, xid 0x..., Flags [Broadcast]"
+#   option:  "    Hostname (12), length 9: \"phone\"" -- the name is
+#             double-quoted, exactly as tcpdump prints ASCII option data.
+# A client with no address yet sources from 0.0.0.0.68; the client MAC is
+# the chaddr from the payload, printed in the same lowercase form as the
+# ARP MACs, so it joins the hosts/<ip> MAC content as the names/<mac> key.
+#
+# Hosts used below:
+#   02:00:00:00:00:0a   (10.10.10.10 -- the fixture's existing client)
+#   02:00:00:00:00:0b   (10.10.10.11 -- the second client)
+#   02:00:00:00:00:0f   (a DHCP-only client: sends a name but no ARP;
+#                        must gain a name file but NO host binding)
+#   02:00:00:00:00:11   (invalid-charset name "My Phone": must be rejected)
+
+# ---- two named clients -----------------------------------------------
+0.0.0.0.68 > 255.255.255.255.67: BOOTP/DHCP, Request from 02:00:00:00:00:0a, length 300, xid 0x1111, Flags [Broadcast]
+	  Client-Ethernet-Address 02:00:00:00:00:0a
+	  Vendor-rfc1048 Extensions
+	    Magic Cookie 0x63825363
+	    DHCP-Message (53), length 1: Discover
+	    Hostname (12), length 9: "livingroom"
+	    Requested-IP (50), length 4: 10.10.10.10
+0.0.0.0.68 > 255.255.255.255.67: BOOTP/DHCP, Request from 02:00:00:00:00:0b, length 300, xid 0x2222, Flags [Broadcast]
+	  Vendor-rfc1048 Extensions
+	    Magic Cookie 0x63825363
+	    DHCP-Message (53), length 1: Discover
+	    Hostname (12), length 10: "android-tv"
+
+# ---- a client that requests WITHOUT option 12 (e.g. iOS): no name ----
+# (must leave names/ empty for its MAC, and must not disturb pending state)
+0.0.0.0.68 > 255.255.255.255.67: BOOTP/DHCP, Request from 02:00:00:00:00:0c, length 300, xid 0x3333, Flags [Broadcast]
+	  Vendor-rfc1048 Extensions
+	    Magic Cookie 0x63825363
+	    DHCP-Message (53), length 1: Discover
+	    Parameter-Request (55), length 6: Subnet-Mask, BR, Default-Gateway, Domain-Name-Server, Domain-Name, Vendor-Option
+
+# ---- a DHCP-only client: name learned, but no ARP -> no binding ----
+0.0.0.0.68 > 255.255.255.255.67: BOOTP/DHCP, Request from 02:00:00:00:00:0f, length 300, xid 0x4444, Flags [Broadcast]
+	  Vendor-rfc1048 Extensions
+	    Magic Cookie 0x63825363
+	    DHCP-Message (53), length 1: Discover
+	    Hostname (12), length 7: "nas-box"
+
+# ---- an invalid name (spaces): must be REJECTED by store_client_name ----
+0.0.0.0.68 > 255.255.255.255.67: BOOTP/DHCP, Request from 02:00:00:00:00:11, length 300, xid 0x5555, Flags [Broadcast]
+	  Vendor-rfc1048 Extensions
+	    Magic Cookie 0x63825363
+	    DHCP-Message (53), length 1: Discover
+	    Hostname (12), length 9: "My Phone"
+
+# ---- a DHCP Reply from the server: echoes a name but no "Request from" ----
+# (the header matches the sed for nothing, so dhcp_mac is cleared and the
+#  echoed option below MUST NOT be attributed to the previous requester :11)
+255.255.255.255.67 > 255.255.255.255.68: BOOTP/DHCP, Reply, length 300, xid 0x1111, Flags [Broadcast]
+	  Vendor-rfc1048 Extensions
+	    Magic Cookie 0x63825363
+	    DHCP-Message (53), length 1: ACK
+	    Hostname (12), length 9: "livingroom"
+
+# ---- a RE-REQUEST from a named client: same name, must not re-log --------
+# (store_client_name writes-if-changed; the renewed lease re-sends it)
+0.0.0.0.68 > 255.255.255.255.67: BOOTP/DHCP, Request from 02:00:00:00:00:0a, length 300, xid 0x6666, Flags [Broadcast]
+	  Vendor-rfc1048 Extensions
+	    Magic Cookie 0x63825363
+	    DHCP-Message (53), length 1: Request
+	    Hostname (12), length 9: "livingroom"

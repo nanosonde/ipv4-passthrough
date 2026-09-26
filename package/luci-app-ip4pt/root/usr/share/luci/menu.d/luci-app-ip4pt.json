@@ -1,0 +1,13 @@
+{
+	"admin/status/ip4pt": {
+		"title": "IPv4 Passthrough",
+		"order": 90,
+		"action": {
+			"type": "view",
+			"path": "ip4pt/status"
+		},
+		"depends": {
+			"acl": [ "luci-app-ip4pt" ]
+		}
+	}
+}
