@@ -1,0 +1,10 @@
+# OpenWrt SDK/buildroot artifacts
+package/build/
+bin/
+sdks/
+dist/
+*.apk
+
+# test scratch (regenerated on every run)
+tests/tmp/
+.env

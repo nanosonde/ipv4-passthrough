@@ -1,0 +1,76 @@
+#!/bin/sh
+# ip4pt-remove -- drop host binding(s), the LuCI app's Remove backend:
+# state file, nft map element and ebtables arpreply rule, i.e. exactly
+# what the GC's STALE_SECS tier does (the same deprovision_host from
+# ip4pt-lib.sh). Called via rpcd file exec. A removed host is re-learned
+# automatically from its next ARP, so a removal is self-healing.
+#
+# Usage: ip4pt-remove <ipv4>        remove that one binding
+#        ip4pt-remove --suspended   remove every binding currently shown
+#                                   as "Suspended" (arpreply rule absent),
+#                                   i.e. exactly the rows the status page
+#                                   offers as "Remove all suspended"
+#
+#   exit 0  binding(s) removed (bulk mode reports the count on stdout)
+#   exit 1  no such binding (single-IP mode)
+#   exit 2  invalid usage / not a dotted quad
+#
+# The single-IP argument becomes a file path ($STATE_DIR/hosts/$ip), and
+# rpcd's file exec ACL only pattern-matches the command line -- so this
+# script is the gatekeeper: anything that is not a strict dotted quad (or
+# the literal --suspended) is rejected before it is ever used. No-arg
+# execs never pass the ACL in the first place.
+
+. "${IP4PT_LIB:-/usr/lib/ip4pt/ip4pt-lib.sh}"
+
+ip="$1"
+
+# Bulk mode: remove every binding whose arpreply rule is absent -- the
+# exact set the status page lists as "Suspended" (the rule is the one
+# thing suspension removes; discovery re-asserts it on the next ARP, so
+# a just-revived host is never caught by this sweep).
+if [ "$ip" = "--suspended" ]; then
+	[ $# -gt 1 ] && { echo "usage: ip4pt-remove [--suspended|<ipv4>]" >&2; exit 2; }
+	removed=0
+	for f in "$STATE_DIR"/hosts/*; do
+		[ -f "$f" ] || continue
+		bip=$(basename "$f")
+		bmac=$(cat "$f")
+		[ -z "$bmac" ] && continue
+		arpreply_present "$bip" "$bmac" && continue
+		deprovision_host "$bip"
+		removed=$((removed + 1))
+	done
+	echo "removed $removed suspended binding(s)"
+	exit 0
+fi
+
+# Strict dotted-quad validation: digits-only octets, exactly four of them,
+# none empty, none > 255. `set -f` because the unquoted split below must
+# never expand a glob; IFS=. turns the argument into the octet list.
+case "$ip" in
+	""|*[!0-9.]*)
+		echo "usage: ip4pt-remove <ipv4>" >&2
+		exit 2
+		;;
+esac
+
+IFS=.
+set -f
+set -- $ip
+unset IFS
+[ $# -eq 4 ] || { echo "invalid ipv4: $ip" >&2; exit 2; }
+
+for octet in "$@"; do
+	[ -n "$octet" ] && [ "$octet" -le 255 ] 2>/dev/null || {
+		echo "invalid ipv4: $ip" >&2
+		exit 2
+	}
+done
+
+[ -f "$STATE_DIR/hosts/$ip" ] || {
+	echo "no binding for $ip" >&2
+	exit 1
+}
+
+deprovision_host "$ip"

@@ -1,0 +1,57 @@
+# Fixture lines shaped like `tcpdump -i eth2 -l -n -e arp` output.
+# Two dialects are covered on purpose:
+#   modern tcpdump (libpcap >= 1.10): "Request who-has X tell Y, length 28"
+#                                     "Reply X is-at M, length 28"
+#   older tcpdump 4.9.x wording:      "ARP, Request who-has X tell Y, length 28"
+#                                     "ARP, Reply X is-at M, length 28"
+# On OpenWrt (tcpdump + libpcap from the same feed) the modern form applies,
+# but keeping both here pins the parser against the known variants.
+#
+# Hosts used below:
+#   10.10.10.10 / 02:00:00:00:00:0a   (client, requester + replier roles)
+#   10.10.10.11 / 02:00:00:00:00:0b   (second client)
+#   10.10.10.13 / 02:00:00:00:00:0d   (client whose IP later moves to the
+#                                       device with :0e -- MAC-change pin)
+#   10.10.10.1  / 02:00:00:00:00:01   (gateway: Router2's LAN side; its
+#                                       is-at replies must NOT be learned)
+#   192.168.178.1 / 02:00:00:00:00:f0  (FritzBox, default 192.168.178.0/24;
+#                                       appears only in garbage lines)
+
+02:00:00:00:00:0a > ff:ff:ff:ff:ff:ff, ethertype ARP (0x0806), length 42: Request who-has 10.10.10.1 tell 10.10.10.10, length 28
+02:00:00:00:00:01 > 02:00:00:00:00:0a, ethertype ARP (0x0806), length 42: Reply 10.10.10.1 is-at 02:00:00:00:00:01, length 28
+02:00:00:00:00:0a > ff:ff:ff:ff:ff:ff, ethertype ARP (0x0806), length 42: ARP, Request who-has 10.10.10.10 tell 10.10.10.10, length 28
+02:00:00:00:00:0b > ff:ff:ff:ff:ff:ff, ethertype ARP (0x0806), length 42: Request who-has 10.10.10.10 tell 10.10.10.11, length 28
+02:00:00:00:00:0a > 02:00:00:00:00:0b, ethertype ARP (0x0806), length 42: Reply 10.10.10.10 is-at 02:00:00:00:00:0a, length 28
+02:00:00:00:00:0b > ff:ff:ff:ff:ff:ff, ethertype ARP (0x0806), length 42: ARP, Request who-has 10.10.10.1 tell 10.10.10.11, length 28
+02:00:00:00:00:01 > 02:00:00:00:00:0b, ethertype ARP (0x0806), length 42: ARP, Reply 10.10.10.1 is-at 02:00:00:00:00:01, length 28
+# ---- lines that must NOT produce any host update ----
+02:00:00:00:00:0a > ff:ff:ff:ff:ff:ff, ethertype ARP (0x0806), length 42: Request who-has 10.10.10.1 (ff:ff:ff:ff:ff:ff) tell 10.10.10.10, length 28
+02:00:00:00:00:f0 > ff:ff:ff:ff:ff:ff, ethertype IPv4 (0x0800), length 74: 192.168.178.1.53 > 10.10.10.10.53: 12345 1/0/0 PTR something
+listening on eth2, link-type EN10MB (Ethernet), snapshot length 262144 bytes
+
+# ---- LIVE dialect: tcpdump's real output prepends a timestamp ----------
+# The parser must treat the MAC as the first MAC-shaped field, not field 1
+# (which would be the timestamp). This exact shape is taken from production
+# output; it pins the request path against the bug that silently killed it.
+16:51:33.077449 02:00:00:00:00:0c > ff:ff:ff:ff:ff:ff, ethertype ARP (0x0806), length 60: Request who-has 10.10.10.1 tell 10.10.10.12, length 46
+16:51:33.077800 02:00:00:00:00:01 > 02:00:00:00:00:0c, ethertype ARP (0x0806), length 60: Reply 10.10.10.1 is-at 02:00:00:00:00:01, length 46
+# A KNOWN client answering the gateway's unicast probe (self-announce shape,
+# MAC already bound): must refresh the existing binding, NOT re-provision it
+# and NOT create anything new. An UNKNOWN self-announce (the gateway's own
+# gratuitous lines above) still teaches nothing.
+16:52:01.000000 02:00:00:00:00:0a > 02:00:00:00:00:01, ethertype ARP (0x0806), length 60: Reply 10.10.10.10 is-at 02:00:00:00:00:0a, length 46
+# An ARP probe (ACD/DAD, e.g. a client verifying an address before DHCP):
+# the sender field is the unspecified address -- it must NEVER yield a
+# binding. This exact shape produced a stray 0.0.0.0 entry on production.
+17:11:04.000000 02:00:00:00:00:0a > ff:ff:ff:ff:ff:ff, ethertype ARP (0x0806), length 60: Request who-has 10.10.10.1 tell 0.0.0.0, length 46
+
+# ---- MAC CHANGE: an IP moves to a different device ---------------------
+# 10.10.10.13 is first learned from :0d; the IP then belongs to the device
+# with :0e. The binding must flip to the new MAC (state, map element and
+# arpreply rule all re-provision for :0e). Pins the POSIX-sh clobber bug:
+# remove_host_rules' `mac="$2"` destroyed update_host's new-MAC value
+# before it was written, so the binding could never change and instead
+# flapped deprovision/provision with the OLD mac on every ARP (observed
+# live on production as 586 flaps on one reused DHCP address).
+17:12:00.000000 02:00:00:00:00:0d > ff:ff:ff:ff:ff:ff, ethertype ARP (0x0806), length 60: Request who-has 10.10.10.1 tell 10.10.10.13, length 46
+17:12:10.000000 02:00:00:00:00:0e > ff:ff:ff:ff:ff:ff, ethertype ARP (0x0806), length 60: Request who-has 10.10.10.1 tell 10.10.10.13, length 46

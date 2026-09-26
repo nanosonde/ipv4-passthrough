@@ -1,0 +1,15 @@
+{
+	"luci-app-ip4pt": {
+		"description": "Grant access to the ip4pt status page and binding removal",
+		"read": {
+			"file": {
+				"/usr/libexec/ip4pt-status": [ "exec" ]
+			}
+		},
+		"write": {
+			"file": {
+				"/usr/libexec/ip4pt-remove *": [ "exec" ]
+			}
+		}
+	}
+}

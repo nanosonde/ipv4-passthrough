@@ -1,0 +1,82 @@
+#!/bin/sh
+# ip4pt-status -- read-only status snapshot of handled hosts, as JSON, for
+# the LuCI app (luci-app-ip4pt). Same derivation rules as ip4pt-gc.sh: the
+# state files' mtimes ARE the hosts' last-seen times, so nothing is stored
+# twice. "Suspended" is kernel truth only (the ebtables arpreply rule is
+# the one thing suspension removes), taken from the lib's arpreply_present
+# rather than re-implemented here -- same single source of truth as the
+# rule-layer helpers themselves.
+#
+# Output shape (one line per host, no pretty printing -- LuCI parses it):
+# {
+#   "service_running": true,            # discovery daemon alive?
+#   "offline_secs": 900,               # suspend tier threshold (0=off)
+#   "stale_secs": 2592000,              # deprovision tier threshold (0=off)
+#   "hosts": [ {
+#       "name": "livingroom",           # DHCP hostname, null when unknown
+#       "ip": "10.10.10.10", "mac": "02:..", "age": 42, "online": true,
+#       "suspend_in": 858, "remove_in": 2591958    # null when tier disabled
+#   }, ... ]
+# }
+#
+# The name is looked up by the client's MAC from $STATE_DIR/names/<mac>
+# (written by discovery's DHCP capture; see ip4pt-discover.sh) -- the join
+# is deliberately done HERE, not stored per-IP, so the ip-keyed binding
+# state files keep their single-purpose format (hosts/<ip> = MAC only).
+# names/ files are charset-sanitized at write time, so the value is safe
+# to splice raw into JSON.
+
+. "${IP4PT_LIB:-/usr/lib/ip4pt/ip4pt-lib.sh}"
+
+# pgrep is not in busybox' default applets everywhere; a missing probe just
+# means "unknown", rendered by the view as the same warning as "not running"
+# (the table itself still works, only the online column would mislead).
+if command -v pgrep >/dev/null 2>&1; then
+	pgrep -f ip4pt-discover >/dev/null 2>&1
+	service_running=$?
+else
+	service_running=1
+fi
+[ "$service_running" -eq 0 ] && service_running=true || service_running=false
+
+# OFFLINE_SECS may be unset in the conf; the GC treats that as "tier off"
+# and so do we (STALE_SECS always has a value in the shipped conf).
+OFFLINE_SECS="${OFFLINE_SECS:-0}"
+
+printf '{"service_running":%s,"offline_secs":%s,"stale_secs":%s,"hosts":[' \
+	"$service_running" "${OFFLINE_SECS:-0}" "${STALE_SECS:-0}"
+
+now=$(date +%s)
+first=true
+for f in "$STATE_DIR"/hosts/*; do
+	[ -f "$f" ] || continue
+	ip=$(basename "$f")
+	mac=$(cat "$f")
+	[ -z "$mac" ] && continue
+	mtime=$(date -r "$f" +%s 2>/dev/null || echo "$now")
+	age=$((now - mtime))
+	if [ "$age" -lt 0 ]; then age=0; fi
+	if arpreply_present "$ip" "$mac"; then online=true; else online=false; fi
+
+	if [ "$OFFLINE_SECS" -gt 0 ]; then
+		suspend_in=$((OFFLINE_SECS - age))
+		[ "$suspend_in" -lt 0 ] && suspend_in=0
+	else
+		suspend_in=null
+	fi
+	if [ "$STALE_SECS" -gt 0 ]; then
+		remove_in=$((STALE_SECS - age))
+		[ "$remove_in" -lt 0 ] && remove_in=0
+	else
+		remove_in=null
+	fi
+
+	if [ "$first" = true ]; then first=false; else printf ','; fi
+	# Hostname keyed by the client MAC; absent file or empty value -> null.
+	name=$(cat "$STATE_DIR/names/$mac" 2>/dev/null)
+	if [ -n "$name" ]; then name="\"$name\""; else name=null; fi
+	printf '{"name":%s,"ip":"%s","mac":"%s","age":%s,"online":%s,"suspend_in":%s,"remove_in":%s}' \
+		"$name" "$ip" "$mac" "$age" "$online" "$suspend_in" "$remove_in"
+done
+
+printf ']}\n'
